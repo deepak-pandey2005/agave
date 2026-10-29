@@ -1956,6 +1956,7 @@ fn test_merkle_root_metas_coding() {
             &mut shred_insertion_tracker,
             false,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         )
         .unwrap();
@@ -2014,6 +2015,7 @@ fn test_merkle_root_metas_coding() {
             &mut shred_insertion_tracker,
             false,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         ),
         Err(InsertCodingShredError::InvalidShred)
@@ -2080,6 +2082,7 @@ fn test_merkle_root_metas_coding() {
             &mut shred_insertion_tracker,
             false,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         )
         .unwrap();
@@ -2149,6 +2152,7 @@ fn test_merkle_root_metas_data() {
             &mut shred_insertion_tracker,
             false,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         )
         .unwrap();
@@ -2206,6 +2210,7 @@ fn test_merkle_root_metas_data() {
         &mut shred_insertion_tracker,
         false,
         ShredSource::Turbine,
+        None,
         &mut pinnable_slice,
     );
     assert_matches!(
@@ -2301,6 +2306,7 @@ fn test_merkle_root_metas_data() {
             &mut shred_insertion_tracker,
             false,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         )
         .unwrap();
@@ -2375,6 +2381,7 @@ fn test_check_insert_coding_shred() {
             &mut shred_insertion_tracker,
             false,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         )
         .unwrap();
@@ -2386,6 +2393,7 @@ fn test_check_insert_coding_shred() {
             &mut shred_insertion_tracker,
             false,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         ),
         Err(InsertCodingShredError::Exists)
@@ -2433,6 +2441,7 @@ fn test_existing_shred_index_with_different_signature() {
             &mut shred_insertion_tracker,
             is_trusted,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         )
         .unwrap();
@@ -2442,6 +2451,7 @@ fn test_existing_shred_index_with_different_signature() {
             &mut shred_insertion_tracker,
             is_trusted,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         ),
         Err(InsertCodingShredError::Exists)
@@ -2530,6 +2540,7 @@ fn test_existing_coding_shred_index_with_different_position(relabeled_first: boo
             &mut shred_insertion_tracker,
             is_trusted,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         )
         .unwrap();
@@ -2539,6 +2550,7 @@ fn test_existing_coding_shred_index_with_different_position(relabeled_first: boo
             &mut shred_insertion_tracker,
             is_trusted,
             ShredSource::Turbine,
+            None,
             &mut pinnable_slice,
         ),
         Err(InsertCodingShredError::Exists)
@@ -4911,6 +4923,7 @@ fn test_recovery() {
     let (data_shreds, coding_shreds) = setup_erasure_shreds(slot, 0, 100);
     let genesis_config = create_genesis_config(2).genesis_config;
     let root_bank = Arc::new(Bank::new_for_tests(&genesis_config));
+    let mut metrics = BlockstoreInsertionMetrics::default();
 
     let (dummy_retransmit_sender, _) = EvictingSender::new_bounded(0);
     let coding_shreds = coding_shreds.into_iter().map(|shred| {
@@ -4918,6 +4931,7 @@ fn test_recovery() {
             Cow::Owned(shred),
             /*is_repaired:*/ false,
             BlockLocation::Original,
+            /*precomputed_merkle_root:*/ None,
         )
     });
     blockstore
@@ -4931,9 +4945,12 @@ fn test_recovery() {
             )),
             &mut pinnable_slice,
             &mut write_batch,
-            &mut BlockstoreInsertionMetrics::default(),
+            &mut metrics,
         )
         .unwrap();
+    assert_eq!(metrics.num_recovered_data_shreds, data_shreds.len());
+    assert_eq!(metrics.num_recovered_coding_shreds, 0);
+    assert_eq!(metrics.num_recovered_retransmit_batches, 1);
     let shred_bufs: Vec<_> = data_shreds.iter().map(Shred::payload).cloned().collect();
 
     // Check all the data shreds were recovered
@@ -4972,6 +4989,7 @@ fn test_skip_alt_recovery() {
                 Cow::Owned(coding_shreds[0].clone()),
                 /*is_repaired:*/ false,
                 BlockLocation::Original,
+                /*precomputed_merkle_root:*/ None,
             )),
             false, // is_trusted
             None,
@@ -4995,6 +5013,7 @@ fn test_skip_alt_recovery() {
                 Cow::Owned(data_shred),
                 /*is_repaired:*/ true,
                 alternate_location,
+                /*precomputed_merkle_root:*/ None,
             )),
             false, // is_trusted
             Some(&mut ShredRecoveryContext::new(
@@ -5008,7 +5027,9 @@ fn test_skip_alt_recovery() {
         )
         .unwrap();
 
-    assert_eq!(metrics.num_recovered, 0);
+    assert_eq!(metrics.num_recovered_data_shreds, 0);
+    assert_eq!(metrics.num_recovered_coding_shreds, 0);
+    assert_eq!(metrics.num_recovered_retransmit_batches, 0);
     assert!(
         blockstore
             .get_index_from_location(slot, alternate_location)
@@ -5081,6 +5102,7 @@ fn test_recovery_discards_unexpected_data_complete_shreds() {
                 Cow::Owned(shred),
                 /*is_repaired:*/ false,
                 BlockLocation::Original,
+                /*precomputed_merkle_root:*/ None,
             )
         })
         .collect();
@@ -5101,7 +5123,11 @@ fn test_recovery_discards_unexpected_data_complete_shreds() {
         )
         .unwrap();
 
-    assert_eq!(metrics.num_recovered, 0);
+    assert_eq!(metrics.num_recovered_data_shreds, 0);
+    // The invalid data shreds are discarded, but the missing coding shred is
+    // still recovered and submitted for retransmit.
+    assert_eq!(metrics.num_recovered_coding_shreds, 1);
+    assert_eq!(metrics.num_recovered_retransmit_batches, 1);
     assert_eq!(metrics.num_recovered_inserted, 0);
     assert_eq!(metrics.num_recovered_failed_invalid, 0);
 
@@ -6264,9 +6290,14 @@ fn test_get_double_merkle_root(use_alternate_location: bool) {
     };
 
     // Insert shreds into blockstore at the specified location
-    let shreds = data_shreds
-        .iter()
-        .map(|shred| (Cow::Borrowed(shred), use_alternate_location, block_location));
+    let shreds = data_shreds.iter().map(|shred| {
+        (
+            Cow::Borrowed(shred),
+            use_alternate_location,
+            block_location,
+            None,
+        )
+    });
     let insert_results = blockstore
         .do_insert_shreds(
             shreds,
@@ -6361,10 +6392,14 @@ fn test_get_double_merkle_root(use_alternate_location: bool) {
         false, // not last in slot
     );
 
-    let shreds = partial_shreds
-        .iter()
-        .take(3)
-        .map(|shred| (Cow::Borrowed(shred), use_alternate_location, block_location));
+    let shreds = partial_shreds.iter().take(3).map(|shred| {
+        (
+            Cow::Borrowed(shred),
+            use_alternate_location,
+            block_location,
+            None,
+        )
+    });
     let insert_results = blockstore
         .do_insert_shreds(
             shreds,
@@ -6397,7 +6432,7 @@ fn insert_test_block_at_location(
     let is_repaired = location != BlockLocation::Original;
     let shreds = data_shreds
         .iter()
-        .map(|shred| (Cow::Borrowed(shred), is_repaired, location));
+        .map(|shred| (Cow::Borrowed(shred), is_repaired, location, None));
     let insert_results = blockstore
         .do_insert_shreds(
             shreds,
@@ -6548,7 +6583,7 @@ fn test_get_data_shreds_for_slot() {
         let is_repaired = location != BlockLocation::Original;
         let shreds = data_shreds
             .iter()
-            .map(|shred| (Cow::Borrowed(shred), is_repaired, location));
+            .map(|shred| (Cow::Borrowed(shred), is_repaired, location, None));
         let insert_results = blockstore
             .do_insert_shreds(
                 shreds,
